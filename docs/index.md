@@ -1,132 +1,72 @@
 # Logging & Redirection in EOAP
 
-Proper handling of stdout and stderr is essential for EO Application Packages (EOAPs).
-Execution environments such as Kubernetes, Calrissian, workflow engines, and OGC API Processes rely on these streams to surface logs to users, operators, and monitoring systems.
+Earth Observation Application Packages (EOAPs) describe processing tools and workflows that may run locally or on remote execution platforms. Clear logging helps developers diagnose failures and lets users follow long processing jobs.
 
-This page describes how EOAP developers should treat logging, when redirection is appropriate, and common mistakes to avoid.
+This guide explains how to keep logs visible while producing usable data outputs with Common Workflow Language (CWL). The repository supplies three runnable tools under `examples/` and includes their source definitions in the guide.
 
-## Why Logging Matters
+## Start here
 
-When a CWL tool runs inside a platform:
+- [Getting started](getting-started.md): install a runner and execute your first tool.
+- [Worked logging example](logging-example.md): compare explicit files, captured data, and captured diagnostics.
+- [CWL patterns](cwl-patterns.md): inspect the tool definitions and output contracts.
+- [Shell redirection](shell-redirection.md): understand pipelines, duplication, and exit status.
+- [Troubleshooting](troubleshooting.md): investigate missing logs and incorrect outputs.
 
-- `stdout` is where normal program output goes
-- `stderr` is where warnings and diagnostics go
-- logs on these streams are sent live to the platform
-- users see progress, warnings, and errors
-- operators can diagnose failures
-- execution environments can expose logs via API or CLI
+## How the pieces fit together
 
-If a tool redirects these streams into files, the platform loses log visibility.
-
-## What Not to Do
-
-Avoid redirecting logs inside the CWL tool:
-
-```yaml
-cwlVersion: v1.2
-class: CommandLineTool
-
-baseCommand: ["bash", "run.sh"]
-
-stdout: result.txt
-stderr: errors.txt
-
-requirements:
-  InitialWorkDirRequirement:
-    listing:
-      - entry: |
-          #!/bin/bash
-          echo "Starting…"          # stdout
-          echo "Warning message" >&2 # stderr
-          echo "Work…"              
-        entryname: run.sh
-inputs: []
-outputs:
-  result:
-    type: File
-    outputBinding: { glob: result.txt }
-  errors:
-    type: File
-    outputBinding: { glob: errors.txt }
+```mermaid
+flowchart LR
+    Tool[Command] -->|stdout and stderr| Runner[CWL runner]
+    Runner -->|logging policy| Platform[Platform log collection]
+    Platform --> View[User log view]
+    Tool -->|explicit files or captured data| Files[Output files]
+    Files --> Binding[CWL output collection]
+    Binding --> Products[Returned data products]
 ```
 
-This captures all logs inside files, preventing:
+The runner can redirect a stream into an output file before it reaches platform collection. Local execution makes diagnostics available through the runner's terminal handling; remote display and retention depend on the deployment.
 
-- kubectl logs
-- calrissian log streaming
-- workflow engine log collection
-- OGC API Processes log exposure
+## Streams, files, and execution status
 
-Unless `stdout` or `stderr` are actual data outputs, this breaks observability.
+A process has two standard output streams:
 
-## When Redirection Is Acceptable
+| Channel | Typical purpose | Example |
+| --- | --- | --- |
+| `stdout` (file descriptor 1) | Normal output, including data when the CLI uses it that way | CSV rows or progress messages |
+| `stderr` (file descriptor 2) | Diagnostics and operational messages | Warnings, progress, error details |
+| Explicit output files | Durable data products collected by the workflow | GeoJSON, a raster, or `report.json` |
+| Exit status | Whether the command succeeded | Zero for success; nonzero for failure by default |
 
-Redirection may be used when stdout or stderr are part of the formal output of the tool:
+The meaning of a stream comes from the CLI's contract. When `stdout` carries machine-readable data, send diagnostics to `stderr` so they do not corrupt that data. Writing an error message does not itself mark a job as failed: the command must also return an appropriate exit status.
 
-- tools that naturally print their result to stdout
-- tools that emit structured diagnostic output intentionally on `stderr`
-- simple data outputs such as GeoJSON or CSV printed to `stdout`
-- cases where `stdout` is the data product, not a log
+## Keep logs available to the platform
 
-In these cases, the redirection reflects the design of the underlying CLI tool.
+Avoid redirecting diagnostic streams exclusively to files inside a tool. Omitting CWL's `stdout` and `stderr` fields leaves their handling to the runner. This lets an execution environment collect them according to its logging policy; it does not guarantee live streaming, retention, or access through an API.
 
-## Recommended Pattern
+Kubernetes normally collects container standard streams. A file written inside a container needs a separate collection mechanism to appear in those logs. A CWL runner can also redirect a subprocess before its messages reach the container streams, so verify the whole path from command to runner to platform. See the [Kubernetes logging architecture](https://kubernetes.io/docs/concepts/cluster-administration/logging/).
 
-✔️ Leave `stdout`/`stderr` unmodified
+Calrissian and other workflow engines may associate messages with individual tasks. Platforms exposing OGC API Processes can choose how to expose execution logs; check the deployment's capabilities rather than assuming a particular log endpoint exists.
 
-Unless they are real outputs, do not redirect them and let them flow naturally so platforms can collect and display logs.
+## Choose a pattern
 
-This is the default behaviour when these fields are omitted.
+| Tool behavior | Recommended approach |
+| --- | --- |
+| Emits only operational messages | Leave both streams available to the runner. |
+| Writes results to named files | Declare those files in CWL `outputs`; keep diagnostics on standard streams. |
+| Emits a data product on `stdout` | Capture `stdout` as a declared file and keep diagnostics on `stderr`. |
+| Emits a formal diagnostic artifact on `stderr` | Capture it deliberately and provide another route for operational visibility. |
+| Needs a persistent copy of logs | Consider platform log retention or an explicit duplication strategy; check failure behavior. |
 
-## How to Capture Structured Output Correctly
+Capturing a stream is appropriate when it is part of the tool's output contract. The mistake is treating every log stream as a data product without considering how users will see failures.
 
-If you need structured output:
+## What this guide includes
 
-```yaml
-outputs:
-  report:
-    type: File
-    outputBinding:
-      glob: report.json
-```
+- [CWL patterns](cwl-patterns.md): complete tools for explicit files and captured data streams, plus an example of hidden logs.
+- [Shell redirection](shell-redirection.md): redirection order, pipelines, `tee`, and exit status.
+- [Troubleshooting](troubleshooting.md): investigate missing logs, malformed outputs, and failures that appear successful.
 
-Write the file explicitly from your code, instead of sending it to stdout/stderr.
+The examples use small shell commands to demonstrate stream handling. Real EOAP tools should also declare their runtime dependencies, resource requirements, and inputs as appropriate.
 
-This keeps logs separate from data.
+## Specification reference
 
-## Minimal Example (Good Practice)
-
-```yaml
-cwlVersion: v1.2
-class: CommandLineTool
-
-baseCommand: ["bash", "run.sh"]
-
-requirements:
-  InitialWorkDirRequirement:
-    listing:
-      - entry: |
-          #!/bin/bash
-          echo "Starting…"          # stdout
-          echo "Warning message" >&2 # stderr
-          echo "Work…"              
-        entryname: run.sh
-inputs: []
-outputs: []
-```
-
-This tool behaves well in all EOAP environments.
-
-## Summary
-
-| Scenario | Redirect stdout/stderr? | 
-| ---------------------------------- | -------------------------------- |
-| Logs, warnings, debug output | **No** | 
-| Stdout/stderr as real data outputs | **Yes** | 
-| Structured output (JSON, metadata) | **Write explicit files instead** | 
-| Testing scenarios | Optional redirection |
-
-## Conclusion
-
-Proper logging is essential for EOAP portability, maintainability, and operational visibility.
-By following these principles, developers ensure that EO Application Packages behave predictably across all supported execution environments.
+CWL's command execution and output binding rules define how streams are captured and files are collected. See the [CWL v1.2 Command Line Tool specification](https://www.commonwl.org/v1.2/CommandLineTool.html) for the full execution model.
