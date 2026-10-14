@@ -7,6 +7,7 @@ on:
     paths:
       # Only rebuild website when docs have changed
       - 'docs/**'
+      - 'examples/**'
       - 'mkdocs.yml'
       - .github/**
 
